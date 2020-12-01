@@ -4,4 +4,4 @@
 
 > awk '/pattern/' filename
 
-> awk "'/ SUPER| STAR/'" dictorary.txt
+> awk "'/ SUPER| STAR/'" dictionary.txt
