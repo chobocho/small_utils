@@ -1,0 +1,5 @@
+/src/awk/.idea
+/src/awk/__pycache__
+/src/awk/build
+/src/awk/dist
+/src/awk/awk.spec
