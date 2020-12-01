@@ -5,25 +5,50 @@ Date: 2020.12.02
 import sys
 import os
 import re
+import glob
 
-
-def find_pattern(pattern, filename):
+def __is_correct_path(filename):
     if not os.path.exists(filename):
         print(filename, " is not exist!")
-        return
+        return False
 
     if not os.path.isfile(filename):
         print(filename, " is not file!")
+        return False
+
+    return True
+
+
+def check_pattern(pattern, filename):
+    try:
+        with open(filename, "rt", encoding="UTF-8", errors="surrogatepass") as targetFile:
+            for line in targetFile:
+                is_exist = re.search(pattern, line)
+                if is_exist is not None:
+                    print(line[:-1])
+    except:
+        pass
+
+
+def find_pattern(pattern, filename):
+    if (filename == ".") or (filename == ".."):
+        print("Not support ", filename)
+        return False
+
+    folder_list = glob.glob(filename)
+
+    if (len(folder_list) == 0) and (not __is_correct_path(filename)):
         return
 
-    print(filename, " : ", pattern, "\n---")
-
-    with open(filename, "rt", encoding="UTF-8", errors="surrogatepass") as targetFile:
-        for line in targetFile:
-            is_exist = re.search(pattern, line)
-            if is_exist is not None:
-                print(line[:-1])
-    print("\n")
+    if len(folder_list) == 0:
+        print(filename, " : ", pattern, "\n---")
+        check_pattern(pattern, filename)
+        print("\n")
+    else:
+        for fn in folder_list:
+            print(fn, " : ", pattern, "\n---")
+            check_pattern(pattern, fn)
+            print("\n")
 
 
 def main(argv):
@@ -39,7 +64,7 @@ def main(argv):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 3:
         print("Usage: awk [option] pattern filename")
     else:
         main(sys.argv[1:])
