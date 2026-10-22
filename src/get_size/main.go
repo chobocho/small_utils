@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+const version = "V0.1.0"
+
 type stringList []string
 
 func (s *stringList) String() string { return strings.Join(*s, ",") }
@@ -107,7 +109,7 @@ type options struct {
 
 func main() {
 	var opts options
-	var help bool
+	var help, showVersion bool
 
 	flag.BoolVar(&opts.showDirs, "d", false, "show the size of each descendant directory")
 	flag.Var(&opts.minSize, "min-size", "minimum size threshold (e.g. 100K, 10M, 1.5G); required with --large-*")
@@ -117,45 +119,58 @@ func main() {
 	flag.BoolVar(&opts.human, "h", false, "print sizes in human-readable units (like ls -h)")
 	flag.BoolVar(&opts.sortSize, "S", false, "sort displayed directories by size, largest first")
 	flag.BoolVar(&opts.jsonOutput, "json", false, "output results as JSON")
-	flag.IntVar(&opts.maxDepth, "max-depth", -1, "limit displayed descendant directory depth (-d only; 0 means none)")
+	flag.IntVar(&opts.maxDepth, "max-depth", -1, "limit displayed descendant directory depth (0 means none)")
 	flag.Var(&opts.excludes, "exclude", "exclude matching relative path or basename (repeatable)")
 	flag.BoolVar(&help, "help", false, "show this help")
+	flag.BoolVar(&showVersion, "version", false, "show version")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: get_size [options] DIR...\n\n")
-		fmt.Fprintf(flag.CommandLine.Output(), "Recursively sum regular-file sizes in each directory.\n\nOptions:\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Usage: getsize [options] [DIR...]\n\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "Recursively sum regular-file sizes in each directory.\nWhen run without options or DIR, displays the current folder and its immediate child directories with human-readable sizes.\n\nOptions:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(flag.CommandLine.Output(), "\nExamples:\n  get_size -h ~/Downloads\n  get_size -d -S --max-depth 2 folder1 folder2\n  get_size --exclude '*.tmp' --json folder\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "\nExamples:\n  getsize\n  getsize -h\n  getsize -h ~/Downloads\n  getsize -d -S --max-depth 2 folder1 folder2\n  getsize --exclude '*.tmp' --json folder\n")
 	}
 	flag.Parse()
 
+	if showVersion {
+		fmt.Printf("getsize %s\n", version)
+		return
+	}
 	if help {
 		flag.Usage()
 		return
 	}
 	if opts.maxDepth < -1 {
-		fmt.Fprintln(os.Stderr, "get_size: --max-depth must be -1 or greater")
+		fmt.Fprintln(os.Stderr, "getsize: --max-depth must be -1 or greater")
 		os.Exit(2)
 	}
 	largeMode := opts.largeFiles || opts.largeDirs || opts.largeAll
 	if largeMode && !opts.minSize.set {
-		fmt.Fprintln(os.Stderr, "get_size: --min-size is required with --large-files, --large-dirs, or --large-all")
+		fmt.Fprintln(os.Stderr, "getsize: --min-size is required with --large-files, --large-dirs, or --large-all")
 		os.Exit(2)
 	}
 	if opts.minSize.set && !largeMode {
-		fmt.Fprintln(os.Stderr, "get_size: --min-size requires one of --large-files, --large-dirs, or --large-all")
-		os.Exit(2)
-	}
-	if flag.NArg() == 0 {
-		flag.Usage()
+		fmt.Fprintln(os.Stderr, "getsize: --min-size requires one of --large-files, --large-dirs, or --large-all")
 		os.Exit(2)
 	}
 
-	results := make([]rootResult, 0, flag.NArg())
+	var dSet, maxDepthSet bool
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "d":
+			dSet = true
+		case "max-depth":
+			maxDepthSet = true
+		}
+	})
+
+	opts, targets := resolveOptions(opts, flag.Args(), dSet, maxDepthSet)
+
+	results := make([]rootResult, 0, len(targets))
 	failed := false
-	for _, root := range flag.Args() {
+	for _, root := range targets {
 		result, err := scanRoot(root, opts)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "get_size: %v\n", err)
+			fmt.Fprintf(os.Stderr, "getsize: %v\n", err)
 			failed = true
 		}
 		if result.Path != "" {
@@ -167,7 +182,7 @@ func main() {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(results); err != nil {
-			fmt.Fprintf(os.Stderr, "get_size: writing JSON: %v\n", err)
+			fmt.Fprintf(os.Stderr, "getsize: writing JSON: %v\n", err)
 			os.Exit(1)
 		}
 	} else if largeMode {
@@ -201,6 +216,7 @@ func main() {
 			}
 		}
 	} else {
+		fmt.Printf("SIZE\tFOLDER\n")
 		for _, result := range results {
 			entries := make([]entryResult, 0, len(result.Directories)+1)
 			entries = append(entries, entryResult{Path: result.Path, Bytes: result.Bytes})
@@ -214,7 +230,7 @@ func main() {
 				})
 			}
 			for _, entry := range entries {
-				fmt.Printf("%s\t%s\n", formatSize(entry.Bytes, opts.human), entry.Path)
+				fmt.Printf("%s\t%s\n", formatSize(entry.Bytes, opts.human), displayDirectoryPath(result.Path, entry.Path))
 			}
 		}
 	}
@@ -224,7 +240,34 @@ func main() {
 	}
 }
 
+func resolveOptions(opts options, args []string, dSet, maxDepthSet bool) (options, []string) {
+	targets := args
+	largeMode := opts.largeFiles || opts.largeDirs || opts.largeAll
+	if len(targets) == 0 {
+		targets = []string{"."}
+		if !dSet && !largeMode {
+			opts.showDirs = true
+			if !maxDepthSet {
+				opts.maxDepth = 1
+			}
+			opts.human = true
+			opts.sortSize = true
+		}
+	} else if len(targets) == 1 && filepath.Clean(targets[0]) == "." {
+		if !dSet && !largeMode {
+			opts.showDirs = true
+			if !maxDepthSet {
+				opts.maxDepth = 1
+			}
+			opts.human = true
+			opts.sortSize = true
+		}
+	}
+	return opts, targets
+}
+
 func scanRoot(root string, opts options) (rootResult, error) {
+	root = filepath.Clean(root)
 	info, err := os.Lstat(root)
 	if err != nil {
 		return rootResult{}, fmt.Errorf("%s: %w", root, err)
@@ -323,6 +366,25 @@ func scanRoot(root string, opts options) (rootResult, error) {
 	}
 
 	return result, errors.Join(walkErrs...)
+}
+
+func displayDirectoryPath(root, path string) string {
+	if path == root {
+		if filepath.Clean(root) == "." {
+			if cwd, err := os.Getwd(); err == nil {
+				return filepath.Base(cwd) + string(filepath.Separator)
+			}
+		}
+		cleanRoot := filepath.Clean(root)
+		if cleanRoot == string(filepath.Separator) {
+			return cleanRoot
+		}
+		return strings.TrimRight(cleanRoot, string(filepath.Separator)) + string(filepath.Separator)
+	}
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return rel + string(filepath.Separator)
+	}
+	return path
 }
 
 func withinMaxDepth(root, path string, maxDepth int) bool {
