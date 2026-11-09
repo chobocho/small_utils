@@ -40,3 +40,4 @@ Notes:
 - Paths containing `..` (including `%2e%2e`) are rejected with `400`.
 - A folder requested without a trailing slash is redirected (`301`) to `folder/`.
 - Percent-encoded (e.g. Korean) file names are supported.
+- If the port is already in use, it prints a one-line hint with another port and exits (code 1).

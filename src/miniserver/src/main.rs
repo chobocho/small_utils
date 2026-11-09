@@ -254,6 +254,23 @@ fn serve_one(stream: &mut TcpStream, root: &Path) -> io::Result<()> {
     }
 }
 
+/// 바인딩 실패를 사용자 친화적인 한 줄 안내로 바꾼다.
+/// 흔한 원인(포트 사용 중·권한 없음)은 OS 에러 문구 대신 해결책을 보여주고,
+/// 예상 못 한 에러만 원문을 남겨 디버깅 단서를 잃지 않게 한다.
+pub fn bind_error_message(port: u16, e: &io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::AddrInUse => {
+            // 65535에서 +1은 u16 범위를 넘으므로 바로 아래 포트를 추천
+            let next = port.checked_add(1).unwrap_or(port - 1);
+            format!("Port {port} is already in use. Try another port: miniserver -p {next}")
+        }
+        io::ErrorKind::PermissionDenied => format!(
+            "Permission denied for port {port}. Use a port above 1023: miniserver -p {DEFAULT_PORT}"
+        ),
+        _ => format!("error: cannot listen on port {port}: {e}"),
+    }
+}
+
 /// 다른 기기에서 접속할 주소를 보여주기 위한 LAN IP 추정.
 /// UDP connect는 라우팅 테이블만 조회하고 실제 패킷은 보내지 않는다.
 fn lan_ip() -> Option<String> {
@@ -286,7 +303,7 @@ fn main() {
     let listener = match TcpListener::bind(("0.0.0.0", cfg.port)) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("error: cannot listen on port {}: {e}", cfg.port);
+            eprintln!("{}", bind_error_message(cfg.port, &e));
             std::process::exit(1);
         }
     };
@@ -547,5 +564,57 @@ mod tests {
         });
         drop(TcpStream::connect(addr).unwrap());
         h.join().unwrap();
+    }
+
+    // ---- 포트 바인딩 실패 안내 ----
+    #[test]
+    fn bind_in_use_real_conflict() {
+        // 실제로 같은 포트를 두 번 열어 OS가 주는 에러 종류를 그대로 검증한다
+        let first = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = first.local_addr().unwrap().port();
+        let err = TcpListener::bind(("0.0.0.0", port)).unwrap_err();
+        let msg = bind_error_message(port, &err);
+        let next = port.checked_add(1).unwrap_or(port - 1);
+        assert_eq!(
+            msg,
+            format!("Port {port} is already in use. Try another port: miniserver -p {next}")
+        );
+        assert!(!msg.contains("os error"));
+    }
+
+    #[test]
+    fn bind_in_use_suggests_neighbor_port() {
+        let e = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(
+            bind_error_message(8811, &e),
+            "Port 8811 is already in use. Try another port: miniserver -p 8812"
+        );
+        // 65535 + 1은 넘치므로 아래 포트를 추천
+        assert_eq!(
+            bind_error_message(65535, &e),
+            "Port 65535 is already in use. Try another port: miniserver -p 65534"
+        );
+        assert_eq!(
+            bind_error_message(1, &e),
+            "Port 1 is already in use. Try another port: miniserver -p 2"
+        );
+    }
+
+    #[test]
+    fn bind_permission_denied() {
+        let e = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            bind_error_message(80, &e),
+            "Permission denied for port 80. Use a port above 1023: miniserver -p 8811"
+        );
+    }
+
+    #[test]
+    fn bind_other_error_keeps_detail() {
+        let e = io::Error::other("boom");
+        assert_eq!(
+            bind_error_message(8811, &e),
+            "error: cannot listen on port 8811: boom"
+        );
     }
 }
