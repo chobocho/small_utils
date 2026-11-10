@@ -15,3 +15,11 @@ Fix Korean filenames received from macOS (NFD) so they display correctly on Wind
 > correctfile -n *        (dry-run: show new names only)
 
 > correctfile -r folder   (process subdirectories recursively)
+
+## Mini Server
+
+Tiny static web server (Rust). Serves the current folder, opening `index.html` by default. Type `quit` to stop.
+
+> miniserver              (port 8811, current folder)
+
+> miniserver -p 9000 -d ~/mysite
