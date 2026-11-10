@@ -1,3 +1,9 @@
+### [2026-11-10 01:31] miniserver: --stop으로 백그라운드 서버 종료
+- **기획:** --stop이 127.0.0.1:PORT로 전용 STOP 요청 전송, 서버는 루프백만 허용(LAN 403), OPTIONS 405로 웹페이지발 요청 차단
+- **TC:** 정상: --stop 파싱·-p 조합, STOP→200+종료, 클라이언트 성공 / 엣지: -d·-s 무시, 루프백 판정(v4/v6/mapped), 서버 없음, 타 프로그램, 무응답 타임아웃
+- **개발:** src/miniserver/src/main.rs, src/miniserver/README.md
+- **검증:** 37 passed, 0 failed (clippy·rustfmt 경고 없음, 실제 백그라운드 실행→--stop 종료 확인)
+
 ### [2026-11-10 01:27] miniserver: --silent 옵션으로 quit 입력 비활성화
 - **기획:** -s/--silent 지정 시 stdin 감시 스레드를 띄우지 않고 quit 안내 줄도 숨김(배너는 유지)
 - **TC:** 정상: --silent/-s, 다른 옵션과 순서 무관 조합, 중복 지정 / 엣지: 기본값 false, -s 뒤 값 거부, --SILENT·--silent=1 거부, 안내 숨김, 도움말 표기

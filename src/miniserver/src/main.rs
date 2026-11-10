@@ -1,14 +1,16 @@
 // 초간단 정적 웹서버: 외부 크레이트 없이 std만 사용한다.
 // 연결마다 스레드 하나를 띄우는 단순 구조 — 개인/로컬 용도라 동시 접속 수가 적다는 전제.
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_PORT: u16 = 8811;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+// STOP 응답 본문 — 클라이언트가 상대가 miniserver인지 확인하는 표식
+pub const STOP_ACK: &str = "miniserver: stopping\n";
 
 #[derive(Debug, PartialEq)]
 pub struct Config {
@@ -16,6 +18,8 @@ pub struct Config {
     pub root: PathBuf,
     // true면 stdin의 quit 입력을 받지 않는다 — 백그라운드/서비스 실행용
     pub silent: bool,
+    // true면 서버를 띄우지 않고 같은 PC에서 실행 중인 서버(-p 포트)에 종료 요청만 보낸다
+    pub stop: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -30,9 +34,11 @@ fn usage() -> String {
     format!(
         "miniserver {VERSION}\n\
          Usage: miniserver [-p PORT] [-d DIR] [-s]\n\
+         \x20      miniserver --stop [-p PORT]\n\
          \n  -p PORT   listen port (1-65535, default {DEFAULT_PORT})\
          \n  -d DIR    document root (default: current directory)\
          \n  -s, --silent  ignore the 'quit' command (stop with Ctrl+C or kill)\
+         \n  --stop    stop the miniserver running on this PC at PORT\
          \n  -h        show this help\n\
          \nType 'quit' and press Enter to stop the server."
     )
@@ -44,6 +50,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         port: DEFAULT_PORT,
         root: PathBuf::from("."),
         silent: false,
+        stop: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -61,6 +68,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
                 cfg.root = PathBuf::from(v);
             }
             "-s" | "--silent" => cfg.silent = true,
+            "--stop" => cfg.stop = true,
             "-h" | "--help" => return Ok(None),
             other => return Err(format!("unknown argument: '{other}'")),
         }
@@ -71,6 +79,42 @@ pub fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
 /// 시작 메시지의 quit 안내 줄. silent면 quit을 받지 않으므로 안내도 하지 않는다.
 pub fn quit_hint(silent: bool) -> Option<&'static str> {
     (!silent).then_some("Type 'quit' and press Enter to stop.")
+}
+
+/// STOP 요청을 받아줄 상대인지 판정한다.
+/// 0.0.0.0에 바인딩해 LAN에도 열려 있으므로, 다른 기기가 서버를 끄지 못하게 루프백만 허용한다.
+/// IPv4-mapped IPv6(::ffff:127.0.0.1)도 같은 PC이므로 정규화한 뒤 판정한다.
+pub fn stop_allowed(peer: IpAddr) -> bool {
+    peer.to_canonical().is_loopback()
+}
+
+/// 실행 중인 서버에 STOP 요청을 보내고 결과를 한 줄 메시지로 돌려준다.
+/// 응답 본문이 STOP_ACK로 끝날 때만 성공으로 본다 — 같은 포트의 다른 프로그램과 구분하기 위함.
+pub fn stop_server(addr: SocketAddr, timeout: Duration) -> Result<String, String> {
+    let port = addr.port();
+    let mut c = match TcpStream::connect_timeout(&addr, timeout) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
+            return Err(format!("No miniserver is running on port {port}."))
+        }
+        Err(e) => return Err(format!("error: cannot connect to port {port}: {e}")),
+    };
+    let io_err = |e: io::Error| format!("error: no valid response from port {port}: {e}");
+    c.set_read_timeout(Some(timeout)).map_err(io_err)?;
+    c.set_write_timeout(Some(timeout)).map_err(io_err)?;
+    c.write_all(b"STOP / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .map_err(io_err)?;
+    // 정상 응답은 수십 바이트 — 상한을 둬서 엉뚱한 프로그램이 대량 데이터를 보내도 메모리를 지킨다
+    let mut buf = Vec::new();
+    (&mut c).take(4096).read_to_end(&mut buf).map_err(io_err)?;
+    let resp = String::from_utf8_lossy(&buf);
+    if resp.starts_with("HTTP/1.1 200 ") && resp.ends_with(STOP_ACK) {
+        Ok(format!("Stopped miniserver on port {port}"))
+    } else {
+        Err(format!(
+            "Port {port} is used by another program, not miniserver."
+        ))
+    }
 }
 
 pub fn is_quit(line: &str) -> bool {
@@ -196,13 +240,16 @@ fn error_response(stream: &mut TcpStream, status: &str, send_body: bool) -> io::
 }
 
 /// 요청 하나를 처리하고 연결을 닫는다 (keep-alive 미지원 — 단순성 우선).
-pub fn handle_connection(mut stream: TcpStream, root: &Path) {
+/// 허용된 STOP 요청이었으면 true — 실제 종료는 호출 측(main)이 한다(테스트에서 프로세스를 죽이지 않도록).
+pub fn handle_connection(mut stream: TcpStream, root: &Path) -> bool {
     // 느린/멈춘 클라이언트가 스레드를 영원히 잡아두지 않도록 타임아웃
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let _ = serve_one(&mut stream, root);
+    let mut stop_requested = false;
+    let _ = serve_one(&mut stream, root, &mut stop_requested);
+    stop_requested
 }
 
-fn serve_one(stream: &mut TcpStream, root: &Path) -> io::Result<()> {
+fn serve_one(stream: &mut TcpStream, root: &Path, stop_requested: &mut bool) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
@@ -223,6 +270,23 @@ fn serve_one(stream: &mut TcpStream, root: &Path) -> io::Result<()> {
     };
     if !version.starts_with("HTTP/") {
         return error_response(stream, "400 Bad Request", true);
+    }
+    // 전용 STOP 메서드: GET이 아니므로 브라우저 웹페이지가 보내려면 CORS 프리플라이트(OPTIONS)가
+    // 필요한데, OPTIONS는 아래에서 405로 거부되어 웹페이지발 종료 요청이 차단된다.
+    if method == "STOP" {
+        let allowed = stream.peer_addr().is_ok_and(|a| stop_allowed(a.ip()));
+        if !allowed {
+            return error_response(stream, "403 Forbidden", true);
+        }
+        write_response(
+            stream,
+            "200 OK",
+            &[("Content-Type", "text/plain; charset=utf-8")],
+            STOP_ACK.as_bytes(),
+            true,
+        )?;
+        *stop_requested = true;
+        return Ok(());
     }
     let send_body = match method {
         "GET" => true,
@@ -303,6 +367,20 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // --stop은 서버를 띄우지 않으므로 -d/-s는 의미가 없어 무시한다 (root 검사보다 먼저 처리)
+    if cfg.stop {
+        let addr = SocketAddr::from(([127, 0, 0, 1], cfg.port));
+        match stop_server(addr, Duration::from_secs(3)) {
+            Ok(msg) => {
+                println!("{msg}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if !cfg.root.is_dir() {
         eprintln!("error: not a directory: {}", cfg.root.display());
         std::process::exit(2);
@@ -349,7 +427,12 @@ fn main() {
         match stream {
             Ok(s) => {
                 let root = Arc::clone(&root);
-                std::thread::spawn(move || handle_connection(s, &root));
+                std::thread::spawn(move || {
+                    if handle_connection(s, &root) {
+                        println!("Stopped by --stop request. Bye.");
+                        std::process::exit(0);
+                    }
+                });
             }
             Err(e) => eprintln!("accept error: {e}"),
         }
@@ -404,6 +487,7 @@ mod tests {
                 port: 9000,
                 root: PathBuf::from("/tmp"),
                 silent: false,
+                stop: false,
             }
         );
     }
@@ -459,6 +543,7 @@ mod tests {
                 port: 9000,
                 root: PathBuf::from("/tmp"),
                 silent: true,
+                stop: false,
             }
         );
         let c = parse_args(&s(&["-s", "-p", "1"])).unwrap().unwrap();
@@ -638,6 +723,183 @@ mod tests {
             handle_connection(stream, &r);
         });
         drop(TcpStream::connect(addr).unwrap());
+        h.join().unwrap();
+    }
+
+    // ---- --stop: 백그라운드 서버 종료 ----
+    #[test]
+    fn args_stop_flag() {
+        assert!(!parse_args(&s(&[])).unwrap().unwrap().stop);
+        let c = parse_args(&s(&["--stop"])).unwrap().unwrap();
+        assert!(c.stop);
+        assert_eq!(c.port, 8811);
+        let c = parse_args(&s(&["-p", "9000", "--stop"])).unwrap().unwrap();
+        assert!(c.stop);
+        assert_eq!(c.port, 9000);
+        assert_eq!(
+            parse_args(&s(&["--stop", "-p", "9000"]))
+                .unwrap()
+                .unwrap()
+                .port,
+            9000
+        );
+    }
+
+    #[test]
+    fn args_stop_ignores_dir_and_silent_but_validates_port() {
+        // -d/-s는 --stop과 함께 와도 파싱 오류가 아니다 (main에서 무시)
+        let c = parse_args(&s(&["--stop", "-d", "/no/such/dir", "-s"]))
+            .unwrap()
+            .unwrap();
+        assert!(c.stop);
+        assert!(parse_args(&s(&["--stop", "-p", "0"])).is_err());
+        assert!(parse_args(&s(&["--stop", "-p"])).is_err());
+        assert!(parse_args(&s(&["--STOP"])).is_err());
+        assert!(parse_args(&s(&["-stop"])).is_err());
+        assert!(parse_args(&s(&["stop"])).is_err());
+    }
+
+    #[test]
+    fn usage_mentions_stop() {
+        assert!(usage().contains("--stop"));
+    }
+
+    #[test]
+    fn stop_allowed_only_from_loopback() {
+        let ip = |x: &str| x.parse::<IpAddr>().unwrap();
+        assert!(stop_allowed(ip("127.0.0.1")));
+        assert!(stop_allowed(ip("127.255.255.254")));
+        assert!(stop_allowed(ip("::1")));
+        assert!(stop_allowed(ip("::ffff:127.0.0.1")));
+        assert!(!stop_allowed(ip("192.168.0.10")));
+        assert!(!stop_allowed(ip("10.0.0.1")));
+        assert!(!stop_allowed(ip("0.0.0.0")));
+        assert!(!stop_allowed(ip("::")));
+        assert!(!stop_allowed(ip("::ffff:192.168.0.10")));
+    }
+
+    // 요청 하나를 처리하고 (응답, 종료 요청 여부)를 돌려준다
+    fn request_outcome(root: &Path, raw: &str) -> (String, bool) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let root = root.to_path_buf();
+        let h = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(stream, &root)
+        });
+        let mut c = TcpStream::connect(addr).unwrap();
+        c.write_all(raw.as_bytes()).unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).unwrap();
+        (out, h.join().unwrap())
+    }
+
+    #[test]
+    fn http_stop_from_loopback_requests_shutdown() {
+        let r = temp_root();
+        let (out, stop) = request_outcome(&r, "STOP / HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(out.starts_with("HTTP/1.1 200 OK\r\n"), "{out}");
+        assert!(out.ends_with(STOP_ACK), "{out}");
+        assert!(stop);
+    }
+
+    #[test]
+    fn http_normal_requests_do_not_shutdown() {
+        let r = temp_root();
+        assert!(!request_outcome(&r, "GET / HTTP/1.1\r\n\r\n").1);
+        assert!(!request_outcome(&r, "garbage\r\n\r\n").1);
+        // 메서드는 대소문자 구분 — 소문자 stop은 일반 405
+        let (out, stop) = request_outcome(&r, "stop / HTTP/1.1\r\n\r\n");
+        assert!(out.starts_with("HTTP/1.1 405 "), "{out}");
+        assert!(!stop);
+        // 브라우저 CORS 프리플라이트(OPTIONS)가 거부되어야 웹페이지발 STOP이 막힌다
+        let (out, stop) = request_outcome(&r, "OPTIONS / HTTP/1.1\r\n\r\n");
+        assert!(out.starts_with("HTTP/1.1 405 "), "{out}");
+        assert!(out.contains("Allow: GET, HEAD\r\n"), "{out}");
+        assert!(!stop);
+    }
+
+    #[test]
+    fn stop_server_success() {
+        let r = temp_root();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle_connection(stream, &r)
+        });
+        let msg = stop_server(addr, Duration::from_secs(2)).unwrap();
+        assert_eq!(msg, format!("Stopped miniserver on port {}", addr.port()));
+        assert!(h.join().unwrap());
+    }
+
+    #[test]
+    fn stop_server_nothing_running() {
+        // 포트를 잡았다 놓아 '아무도 듣지 않는' 포트를 만든다
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let err = stop_server(addr, Duration::from_secs(2)).unwrap_err();
+        assert_eq!(
+            err,
+            format!("No miniserver is running on port {}.", addr.port())
+        );
+    }
+
+    // 임의 응답을 돌려주는 '다른 프로그램' 흉내
+    fn fake_server(reply: &'static [u8]) -> (SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut c, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 256];
+            let _ = c.read(&mut buf);
+            let _ = c.write_all(reply);
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn stop_server_other_program() {
+        for reply in [
+            &b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"[..],
+            &b""[..],
+            &b"SSH-2.0-OpenSSH\r\n"[..],
+        ] {
+            let (addr, h) = fake_server(reply);
+            let err = stop_server(addr, Duration::from_secs(2)).unwrap_err();
+            assert_eq!(
+                err,
+                format!(
+                    "Port {} is used by another program, not miniserver.",
+                    addr.port()
+                ),
+                "reply={reply:?}"
+            );
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn stop_server_times_out_on_silent_peer() {
+        // 접속은 받지만 아무 응답도 하지 않는 상대 — 무한 대기하면 안 된다
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (c, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(800));
+            drop(c);
+        });
+        let t = std::time::Instant::now();
+        let err = stop_server(addr, Duration::from_millis(200)).unwrap_err();
+        assert!(
+            t.elapsed() < Duration::from_millis(700),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(err.starts_with("error: "), "{err}");
         h.join().unwrap();
     }
 
