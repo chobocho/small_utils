@@ -1,3 +1,9 @@
+### [2026-11-10 00:08] get_size 빌드 바이너리 gitignore 처리
+- **기획:** build.sh가 만드는 src/get_size/getsize가 untracked로 남아 루트 .gitignore에 기존 형식대로 추가
+- **TC:** git check-ignore 추가 전 미적용(1) → 추가 후 적용(0)
+- **개발:** .gitignore
+- **검증:** check-ignore 통과, git status에서 getsize 사라짐 확인
+
 ### [2026-11-10 00:04] 루트 README에 get_size 항목 추가
 - **기획:** 기존 형식에 맞춰 Get Size 섹션을 Mini Server 앞(추가 순서)에 삽입, 옵션은 get_size README 기준
 - **TC:** grep '^## Get Size' 추가 전 0 → 추가 후 1
