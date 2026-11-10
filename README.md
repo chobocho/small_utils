@@ -26,8 +26,12 @@ Recursively total file sizes in directories (Go). Shows the folder's total and i
 
 ## Mini Server
 
-Tiny static web server (Rust). Serves the current folder, opening `index.html` by default. Type `quit` to stop.
+Tiny static web server (Rust). Serves the current folder, opening `index.html` by default. Type `quit` or run `miniserver --stop` to stop.
 
 > miniserver              (port 8811, current folder)
 
 > miniserver -p 9000 -d ~/mysite
+
+> miniserver -s &          (silent: ignore `quit`, run in background)
+
+> miniserver --stop        (stop the server on port 8811; add -p PORT for others)
