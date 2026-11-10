@@ -1,3 +1,9 @@
+### [2026-11-10 01:27] miniserver: --silent 옵션으로 quit 입력 비활성화
+- **기획:** -s/--silent 지정 시 stdin 감시 스레드를 띄우지 않고 quit 안내 줄도 숨김(배너는 유지)
+- **TC:** 정상: --silent/-s, 다른 옵션과 순서 무관 조합, 중복 지정 / 엣지: 기본값 false, -s 뒤 값 거부, --SILENT·--silent=1 거부, 안내 숨김, 도움말 표기
+- **개발:** src/miniserver/src/main.rs, src/miniserver/README.md
+- **검증:** 27 passed, 0 failed (clippy·rustfmt 경고 없음, 실제 실행에서 quit 무시 확인)
+
 ### [2026-11-10 00:08] get_size 빌드 바이너리 gitignore 처리
 - **기획:** build.sh가 만드는 src/get_size/getsize가 untracked로 남아 루트 .gitignore에 기존 형식대로 추가
 - **TC:** git check-ignore 추가 전 미적용(1) → 추가 후 적용(0)

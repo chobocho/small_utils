@@ -14,6 +14,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Config {
     pub port: u16,
     pub root: PathBuf,
+    // true면 stdin의 quit 입력을 받지 않는다 — 백그라운드/서비스 실행용
+    pub silent: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,9 +29,10 @@ pub enum Resolved {
 fn usage() -> String {
     format!(
         "miniserver {VERSION}\n\
-         Usage: miniserver [-p PORT] [-d DIR]\n\
+         Usage: miniserver [-p PORT] [-d DIR] [-s]\n\
          \n  -p PORT   listen port (1-65535, default {DEFAULT_PORT})\
          \n  -d DIR    document root (default: current directory)\
+         \n  -s, --silent  ignore the 'quit' command (stop with Ctrl+C or kill)\
          \n  -h        show this help\n\
          \nType 'quit' and press Enter to stop the server."
     )
@@ -40,6 +43,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
     let mut cfg = Config {
         port: DEFAULT_PORT,
         root: PathBuf::from("."),
+        silent: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -56,11 +60,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
                 let v = it.next().ok_or("-d requires a directory")?;
                 cfg.root = PathBuf::from(v);
             }
+            "-s" | "--silent" => cfg.silent = true,
             "-h" | "--help" => return Ok(None),
             other => return Err(format!("unknown argument: '{other}'")),
         }
     }
     Ok(Some(cfg))
+}
+
+/// 시작 메시지의 quit 안내 줄. silent면 quit을 받지 않으므로 안내도 하지 않는다.
+pub fn quit_hint(silent: bool) -> Option<&'static str> {
+    (!silent).then_some("Type 'quit' and press Enter to stop.")
 }
 
 pub fn is_quit(line: &str) -> bool {
@@ -313,22 +323,27 @@ fn main() {
     if let Some(ip) = lan_ip() {
         println!("  network: http://{ip}:{}/", cfg.port);
     }
-    println!("Type 'quit' and press Enter to stop.");
+    if let Some(hint) = quit_hint(cfg.silent) {
+        println!("{hint}");
+    }
 
     // stdin 감시 스레드: quit이면 즉시 종료.
     // EOF(백그라운드 실행 등 stdin 없음)에서는 종료하지 않고 감시만 멈춘다.
-    std::thread::spawn(|| {
-        for line in io::stdin().lock().lines() {
-            match line {
-                Ok(l) if is_quit(&l) => {
-                    println!("Bye.");
-                    std::process::exit(0);
+    // silent면 스레드 자체를 띄우지 않아 stdin을 전혀 읽지 않는다.
+    if !cfg.silent {
+        std::thread::spawn(|| {
+            for line in io::stdin().lock().lines() {
+                match line {
+                    Ok(l) if is_quit(&l) => {
+                        println!("Bye.");
+                        std::process::exit(0);
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
                 }
-                Ok(_) => {}
-                Err(_) => break,
             }
-        }
-    });
+        });
+    }
 
     for stream in listener.incoming() {
         match stream {
@@ -387,7 +402,8 @@ mod tests {
             c,
             Config {
                 port: 9000,
-                root: PathBuf::from("/tmp")
+                root: PathBuf::from("/tmp"),
+                silent: false,
             }
         );
     }
@@ -418,6 +434,65 @@ mod tests {
     fn args_help_returns_none() {
         assert_eq!(parse_args(&s(&["-h"])).unwrap(), None);
         assert_eq!(parse_args(&s(&["--help"])).unwrap(), None);
+    }
+
+    #[test]
+    fn args_silent_default_false() {
+        assert!(!parse_args(&s(&[])).unwrap().unwrap().silent);
+        assert!(!parse_args(&s(&["-p", "9000"])).unwrap().unwrap().silent);
+    }
+
+    #[test]
+    fn args_silent_long_and_short() {
+        assert!(parse_args(&s(&["--silent"])).unwrap().unwrap().silent);
+        assert!(parse_args(&s(&["-s"])).unwrap().unwrap().silent);
+    }
+
+    #[test]
+    fn args_silent_with_other_options_any_order() {
+        let c = parse_args(&s(&["-p", "9000", "--silent", "-d", "/tmp"]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c,
+            Config {
+                port: 9000,
+                root: PathBuf::from("/tmp"),
+                silent: true,
+            }
+        );
+        let c = parse_args(&s(&["-s", "-p", "1"])).unwrap().unwrap();
+        assert!(c.silent);
+        assert_eq!(c.port, 1);
+    }
+
+    #[test]
+    fn args_silent_repeated_is_ok() {
+        assert!(parse_args(&s(&["-s", "--silent"])).unwrap().unwrap().silent);
+    }
+
+    #[test]
+    fn args_silent_does_not_swallow_value_or_accept_variants() {
+        // -s는 값을 받지 않으므로 뒤의 토큰은 별도 인자로 해석되어야 한다
+        assert!(parse_args(&s(&["-s", "9000"])).is_err());
+        // -p 값 자리에 -s가 오면 포트 오류
+        assert!(parse_args(&s(&["-p", "-s"])).is_err());
+        assert!(parse_args(&s(&["--SILENT"])).is_err());
+        assert!(parse_args(&s(&["-silent"])).is_err());
+        assert!(parse_args(&s(&["--silent=1"])).is_err());
+    }
+
+    #[test]
+    fn quit_hint_hidden_when_silent() {
+        assert!(quit_hint(false).unwrap().contains("quit"));
+        assert_eq!(quit_hint(true), None);
+    }
+
+    #[test]
+    fn usage_mentions_silent() {
+        let u = usage();
+        assert!(u.contains("--silent"));
+        assert!(u.contains("-s"));
     }
 
     // ---- quit 판정 ----

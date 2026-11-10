@@ -13,18 +13,19 @@ This creates the `miniserver` executable in this directory. You can also build d
 ## Usage
 
 ```text
-miniserver [-p PORT] [-d DIR]
+miniserver [-p PORT] [-d DIR] [-s]
 ```
 
 - `-p PORT`: listen port (1-65535). Default `8811`.
 - `-d DIR`: document root. Default is the current directory.
+- `-s`, `--silent`: ignore the `quit` command (stdin is not read). Stop the server with Ctrl+C or `kill`. Useful when running in the background.
 - `-h`: show help.
 
 Requesting `/` (or any folder) serves that folder's `index.html`. Other files (CSS, JS, images, ...) are served with a Content-Type based on their extension.
 
 The server listens on `0.0.0.0`, so other devices on the same network can connect. The startup message prints both the local and the network address.
 
-Type `quit` and press Enter to stop the server.
+Type `quit` and press Enter to stop the server (unless `--silent` is given).
 
 ```text
 $ cd mysite && miniserver
