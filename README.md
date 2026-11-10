@@ -16,6 +16,14 @@ Fix Korean filenames received from macOS (NFD) so they display correctly on Wind
 
 > correctfile -r folder   (process subdirectories recursively)
 
+## Get Size
+
+Recursively total file sizes in directories (Go). Shows the folder's total and its child directories sorted by size.
+
+> getsize                 (current folder)
+
+> getsize -h --large-files --min-size 100M dir
+
 ## Mini Server
 
 Tiny static web server (Rust). Serves the current folder, opening `index.html` by default. Type `quit` to stop.

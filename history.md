@@ -1,3 +1,9 @@
+### [2026-11-10 00:04] 루트 README에 get_size 항목 추가
+- **기획:** 기존 형식에 맞춰 Get Size 섹션을 Mini Server 앞(추가 순서)에 삽입, 옵션은 get_size README 기준
+- **TC:** grep '^## Get Size' 추가 전 0 → 추가 후 1
+- **개발:** README.md
+- **검증:** grep 확인 통과, CRLF 0, 기존 내용 변경 없음
+
 ### [2026-11-10 00:04] 루트 README에 miniserver 항목 추가
 - **기획:** 기존 형식(제목·한 줄 설명·> 사용 예)에 맞춰 Mini Server 섹션을 끝에 추가
 - **TC:** grep '^## Mini Server' 추가 전 0 → 추가 후 1
