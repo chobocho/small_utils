@@ -1,3 +1,10 @@
+### [2026-11-19 06:21] czip: 분할 볼륨 지원 ZIP 압축/해제 CLI 추가
+- **기획:** ARJ식 명령(a/x/e/l/t)과 -v/-m/-o/-y 스위치. 분할은 7-Zip 호환 .zip.001 순차 분할로 Go 표준 archive/zip 재사용
+- **TC:** 정상: 단일/분할 왕복, 한글 이름, 패턴, 7z·unzip 교차 검증 / 엣지: 볼륨 경계 N·N+1, 999개 초과, 볼륨 누락·손상, zip-slip, 번호형 무관 파일 보존
+- **개발:** src/zip/main.go, src/zip/archive.go, src/zip/extract.go, src/zip/volume.go, src/zip/go.mod, src/zip/build.sh, src/zip/README.md, README.md 외 7개 파일
+- **검증:** 52 passed, 0 failed, 1 skipped
+- **비고:** 암호화·기존 아카이브 갱신·CP949 이름 변환 미지원, 윈도우 미검증. 읽기 불가 파일 TC는 권한이 강제되지 않는 환경이라 skip(수동 확인함)
+
 ### [2026-11-10 01:38] 루트 README에 miniserver -s/--stop 추가
 - **기획:** 기존 Mini Server 섹션 형식(> 사용 예)에 맞춰 -s 백그라운드 실행과 --stop 종료 예시 추가
 - **TC:** grep '--stop|miniserver -s' 추가 전 0 → 추가 후 3

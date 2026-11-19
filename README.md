@@ -35,3 +35,15 @@ Tiny static web server (Rust). Serves the current folder, opening `index.html` b
 > miniserver -s &          (silent: ignore `quit`, run in background)
 
 > miniserver --stop        (stop the server on port 8811; add -p PORT for others)
+
+## Czip
+
+ZIP archiver with split volumes and ARJ-style commands (Go). Volumes are named `backup.zip.001`, `.002`, …; 7-Zip opens them directly and `cat backup.zip.* > backup.zip` rejoins them.
+
+> czip a backup.zip docs photos            (create; directories are recursed)
+
+> czip a -v100m -m9 backup.zip photos      (split into 100 MB volumes, best compression)
+
+> czip l backup.zip                        (list; `t` tests CRC)
+
+> czip x -orestore backup.zip              (extract with paths; `e` flattens, `-y` overwrites)
